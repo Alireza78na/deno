@@ -1,7 +1,7 @@
 /**
  * ==============================================================================
  * ApexEdge Gateway - High-Performance Edge API Mesh (Deno Deploy)
- * Dual-Mode: Enterprise Camouflage Decoy + Authenticated Upstream Proxy
+ * Hardened Edge Routing, Header Sanitization & Zero-Information Decoy
  * ==============================================================================
  */
 
@@ -34,10 +34,9 @@ async function handleProxyRequest(
 ): Promise<Response> {
   const targetDomain = Deno.env.get("TARGET_DOMAIN") || DEFAULT_TARGET_DOMAIN;
 
-  // ۱. استخراج شناسه نود
+  // ۱. شناسایی نود مقصد از روی هدر یا پارامترهای ارسالی
   let targetNode = request.headers.get("X-Target-Node")?.toLowerCase()?.trim();
 
-  // بررسی مسیر در صورتی که هدر ست نشده باشد (مثلاً /s1/path)
   if (!targetNode) {
     const pathSegments = url.pathname.split("/").filter(Boolean);
     if (pathSegments.length > 0 && ALLOWED_NODES.has(pathSegments[0].toLowerCase())) {
@@ -46,7 +45,6 @@ async function handleProxyRequest(
     }
   }
 
-  // بررسی سابدامین درخواست در صورتی که دامنه Wildcard روی Deno ست شده باشد
   if (!targetNode) {
     const hostParts = url.hostname.split(".");
     if (hostParts.length > 2 && ALLOWED_NODES.has(hostParts[0].toLowerCase())) {
@@ -55,20 +53,17 @@ async function handleProxyRequest(
   }
 
   if (!targetNode || !ALLOWED_NODES.has(targetNode)) {
-    return new Response(
-      JSON.stringify({ error: "Invalid or missing upstream target node", code: "ROUTING_FAILED" }),
-      {
-        status: 502,
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-      }
-    );
+    return new Response(renderWebserverErrorPage(404, "Not Found"), {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
   }
 
-  // ۲. ساخت آدرس مقصد در سرور بالادستی
+  // ۲. آدرس‌دهی دقیق به سرور بالادستی
   const upstreamHostname = `${targetNode}.${targetDomain}`;
   const upstreamUrl = new URL(url.pathname + url.search, `https://${upstreamHostname}:443`);
 
-  // ۳. پاکسازی و آماده‌سازی هدرها
+  // ۳. پاکسازی هدرها و حذف سرنخ‌های پروتکل
   const upstreamHeaders = new Headers(request.headers);
   upstreamHeaders.set("Host", upstreamHostname);
 
@@ -79,7 +74,6 @@ async function handleProxyRequest(
   upstreamHeaders.delete("X-Slice-Offset");
   upstreamHeaders.delete("X-Slice-Length");
 
-  // دریافت و فوروارد آی‌پی کاربر
   const clientIP =
     request.headers.get("CF-Connecting-IP") ||
     request.headers.get("X-Real-IP") ||
@@ -102,7 +96,7 @@ async function handleProxyRequest(
 
     const fullBody = await upstreamResponse.arrayBuffer();
 
-    // پشتیبانی کامل از برش بایتی (Range Slicing)
+    // پشتیبانی از بایت‌رنج (Byte Slicing)[cite: 3]
     const sliceOffsetHeader = request.headers.get("X-Slice-Offset");
     const sliceLengthHeader = request.headers.get("X-Slice-Length");
     const rangeHeader = request.headers.get("Range");
@@ -111,12 +105,12 @@ async function handleProxyRequest(
     let statusCode = upstreamResponse.status;
     const responseHeaders = new Headers(upstreamResponse.headers);
 
-    // حذف هدرهای اتصال و رمزنگاری بافر
     responseHeaders.delete("content-encoding");
     responseHeaders.delete("transfer-encoding");
     responseHeaders.delete("content-length");
     responseHeaders.delete("connection");
     responseHeaders.delete("keep-alive");
+    responseHeaders.delete("server"); // حذف ردپای وب‌سرور نود
 
     if (sliceOffsetHeader !== null && sliceLengthHeader !== null) {
       const offset = parseInt(sliceOffsetHeader, 10) || 0;
@@ -125,10 +119,9 @@ async function handleProxyRequest(
 
       const end = Math.min(offset + length, totalSize);
       finalBody = fullBody.slice(offset, end);
-      statusCode = 206; // Partial Content
+      statusCode = 206;
 
       responseHeaders.set("Content-Range", `bytes ${offset}-${end - 1}/${totalSize}`);
-      responseHeaders.set("X-Total-Bytes", totalSize.toString());
     } else if (rangeHeader && rangeHeader.startsWith("bytes=")) {
       const parts = rangeHeader.replace("bytes=", "").split("-");
       const start = parseInt(parts[0], 10) || 0;
@@ -138,53 +131,66 @@ async function handleProxyRequest(
       finalBody = fullBody.slice(start, Math.min(end, totalSize));
       statusCode = 206;
       responseHeaders.set("Content-Range", `bytes ${start}-${Math.min(end, totalSize) - 1}/${totalSize}`);
-      responseHeaders.set("X-Total-Bytes", totalSize.toString());
     }
 
-    // حفظ سرفصل حیاتی مشخصات کاربر برای کلاینت‌ها
+    // هدایت ایمن سرفصل مشخصات اکانت کاربر[cite: 3]
     const subInfo = upstreamResponse.headers.get("Subscription-Userinfo");
     if (subInfo) {
       responseHeaders.set("Subscription-Userinfo", subInfo);
     }
 
-    // هدرهای بهینه‌سازی و عدم ذخیره در کش
+    // هدرهای عمومی بهینه‌سازی
     responseHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-    responseHeaders.set("X-Edge-Origin", "Apex-Deno-Mesh");
+    responseHeaders.set("Pragma", "no-cache");
 
     return new Response(finalBody, {
       status: statusCode,
       statusText: statusCode === 206 ? "Partial Content" : upstreamResponse.statusText,
       headers: responseHeaders,
     });
-  } catch (err: unknown) {
-    const errorDetails = err instanceof Error ? err.message : String(err);
-    return new Response(
-      JSON.stringify({
-        error: "Upstream Proxy Exception",
-        details: errorDetails,
-        code: "GATEWAY_TIMEOUT",
-      }),
-      {
-        status: 502,
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-      }
-    );
+  } catch (_err: unknown) {
+    // بازگرداندن صفحه وب‌سرور استاندارد در زمان خطای بالادست
+    return new Response(renderWebserverErrorPage(502, "Bad Gateway"), {
+      status: 502,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
   }
 }
 
-// ثبت سرور بومی دینو با کارایی بالا
+function renderWebserverErrorPage(code: number, text: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <title>${code} ${text}</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 15% 0; background: #fff; color: #222; }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    hr { max-width: 500px; border: 0; border-top: 1px solid #ccc; margin: 15px auto; }
+    p { font-size: 14px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>${code} ${text}</h1>
+  <p>The requested service is unreachable or returned an invalid response.</p>
+  <hr>
+  <p>LiteSpeed Web Server</p>
+</body>
+</html>`;
+}
+
+// ثبت وب‌سرور اصلی دینو
 Deno.serve(async (request: Request, info: Deno.ServeHandlerInfo): Promise<Response> => {
   const url = new URL(request.url);
   const secretToken = Deno.env.get("SUB_AUTH_TOKEN") || DEFAULT_SECRET_TOKEN;
 
-  // مرحله ۱: اعتبارسنجی توکن لایه امنیتی
+  // مرحله ۱: بررسی اعتبارسنجی
   const isAuthenticated = verifyAuthentication(request, url, secretToken);
 
-  // مرحله ۲: فعال‌سازی مود استتار در صورت عدم احراز هویت
+  // مرحله ۲: هدایت پروب‌ها و درخواست‌های ناشناس به استتار
   if (!isAuthenticated) {
     return handleDecoyTraffic(request, url);
   }
 
-  // مرحله ۳: هدایت درخواست احراز هویت شده به نود مورد نظر
+  // مرحله ۳: عبور ترافیک معتبر و پروکسی به پنل X-UI
   return await handleProxyRequest(request, url, info);
 });
