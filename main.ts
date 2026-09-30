@@ -1,16 +1,21 @@
 /**
  * ==============================================================================
  * ApexEdge Gateway - High-Performance Edge API Mesh (Deno Deploy)
- * Hardened Edge Routing, Header Sanitization & Zero-Information Decoy
+ * Hardened Edge Routing, Zero-Hardcoded Secrets & Zero-Information Decoy
  * ==============================================================================
  */
 
 import { handleDecoyTraffic } from "./decoy.ts";
 
-const DEFAULT_SECRET_TOKEN = "LY8hvDZPaM4CyXXJMP3FgPQsUXinYp3nHC8Nd";
-const DEFAULT_TARGET_DOMAIN = "fp-network.link";
-const ALLOWED_NODES = new Set(["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
+// دریافت لیست نودهای مجاز از متغیرهای محیطی یا مقدار پیش‌فرض نودها
+const rawAllowedNodes = Deno.env.get("ALLOWED_NODES") || "s1,s2,s3,s4,s5,s6,s7";
+const ALLOWED_NODES = new Set(
+  rawAllowedNodes.split(",").map((node) => node.trim().toLowerCase())
+);
 
+/**
+ * اعتبارسنجی توکن لایه امنیتی ورودی
+ */
 function verifyAuthentication(request: Request, url: URL, secretToken: string): boolean {
   const authHeader = request.headers.get("Authorization");
   const apiKey = request.headers.get("X-API-Key");
@@ -27,14 +32,24 @@ function verifyAuthentication(request: Request, url: URL, secretToken: string): 
   return false;
 }
 
+/**
+ * مدیریت پروکسی درخواست به سمت نود بالادستی
+ */
 async function handleProxyRequest(
   request: Request,
   url: URL,
   info: Deno.ServeHandlerInfo
 ): Promise<Response> {
-  const targetDomain = Deno.env.get("TARGET_DOMAIN") || DEFAULT_TARGET_DOMAIN;
+  // دریافت دامنه سرورهای بالادستی از متغیر محیطی
+  const targetDomain = Deno.env.get("TARGET_DOMAIN");
+  if (!targetDomain) {
+    return new Response(renderWebserverErrorPage(502, "Bad Gateway"), {
+      status: 502,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
 
-  // ۱. شناسایی نود مقصد از روی هدر یا پارامترهای ارسالی
+  // ۱. شناسایی نود مقصد از روی هدر یا پارامترهای ارسالی[cite: 3]
   let targetNode = request.headers.get("X-Target-Node")?.toLowerCase()?.trim();
 
   if (!targetNode) {
@@ -59,11 +74,11 @@ async function handleProxyRequest(
     });
   }
 
-  // ۲. آدرس‌دهی دقیق به سرور بالادستی
-  const upstreamHostname = `${targetNode}.${targetDomain}`;
+  // ۲. آدرس‌دهی مستقیم به سرور نود[cite: 3]
+  const upstreamHostname = `${targetNode}.${targetDomain.trim()}`;
   const upstreamUrl = new URL(url.pathname + url.search, `https://${upstreamHostname}:443`);
 
-  // ۳. پاکسازی هدرها و حذف سرنخ‌های پروتکل
+  // ۳. پاکسازی کامل هدرهای داخلی جهت حذف هرگونه ردپای پروکسی[cite: 3]
   const upstreamHeaders = new Headers(request.headers);
   upstreamHeaders.set("Host", upstreamHostname);
 
@@ -74,6 +89,7 @@ async function handleProxyRequest(
   upstreamHeaders.delete("X-Slice-Offset");
   upstreamHeaders.delete("X-Slice-Length");
 
+  // فوروارد امن آی‌پی کلاینت[cite: 3]
   const clientIP =
     request.headers.get("CF-Connecting-IP") ||
     request.headers.get("X-Real-IP") ||
@@ -96,7 +112,7 @@ async function handleProxyRequest(
 
     const fullBody = await upstreamResponse.arrayBuffer();
 
-    // پشتیبانی از بایت‌رنج (Byte Slicing)[cite: 3]
+    // پشتیبانی کامل از برش بایتی بسته (Byte Slicing / Range)[cite: 3]
     const sliceOffsetHeader = request.headers.get("X-Slice-Offset");
     const sliceLengthHeader = request.headers.get("X-Slice-Length");
     const rangeHeader = request.headers.get("Range");
@@ -105,12 +121,13 @@ async function handleProxyRequest(
     let statusCode = upstreamResponse.status;
     const responseHeaders = new Headers(upstreamResponse.headers);
 
+    // حذف هدرهای افشاکننده یا ناسازگار پروتکل[cite: 3]
     responseHeaders.delete("content-encoding");
     responseHeaders.delete("transfer-encoding");
     responseHeaders.delete("content-length");
     responseHeaders.delete("connection");
     responseHeaders.delete("keep-alive");
-    responseHeaders.delete("server"); // حذف ردپای وب‌سرور نود
+    responseHeaders.delete("server");
 
     if (sliceOffsetHeader !== null && sliceLengthHeader !== null) {
       const offset = parseInt(sliceOffsetHeader, 10) || 0;
@@ -133,13 +150,13 @@ async function handleProxyRequest(
       responseHeaders.set("Content-Range", `bytes ${start}-${Math.min(end, totalSize) - 1}/${totalSize}`);
     }
 
-    // هدایت ایمن سرفصل مشخصات اکانت کاربر[cite: 3]
+    // هدایت ایمن سرفصل وضعیت مصرف کاربر[cite: 3]
     const subInfo = upstreamResponse.headers.get("Subscription-Userinfo");
     if (subInfo) {
       responseHeaders.set("Subscription-Userinfo", subInfo);
     }
 
-    // هدرهای عمومی بهینه‌سازی
+    // هدرهای بهینه‌سازی و عدم ذخیره در کش
     responseHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     responseHeaders.set("Pragma", "no-cache");
 
@@ -149,7 +166,7 @@ async function handleProxyRequest(
       headers: responseHeaders,
     });
   } catch (_err: unknown) {
-    // بازگرداندن صفحه وب‌سرور استاندارد در زمان خطای بالادست
+    // بازگرداندن صفحه خطای طبیعی وب‌سرور در صورت قطعی بالادست
     return new Response(renderWebserverErrorPage(502, "Bad Gateway"), {
       status: 502,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -157,6 +174,9 @@ async function handleProxyRequest(
   }
 }
 
+/**
+ * شبیه‌سازی صفحه خطای وب‌سرور استاندارد جهت مقابله با پروب‌های فعال
+ */
 function renderWebserverErrorPage(code: number, text: string): string {
   return `<!DOCTYPE html>
 <html>
@@ -178,19 +198,24 @@ function renderWebserverErrorPage(code: number, text: string): string {
 </html>`;
 }
 
-// ثبت وب‌سرور اصلی دینو
+// ثبت وب‌سرور در بستر دینو دیپلوی
 Deno.serve(async (request: Request, info: Deno.ServeHandlerInfo): Promise<Response> => {
   const url = new URL(request.url);
-  const secretToken = Deno.env.get("SUB_AUTH_TOKEN") || DEFAULT_SECRET_TOKEN;
+  const secretToken = Deno.env.get("SUB_AUTH_TOKEN");
 
-  // مرحله ۱: بررسی اعتبارسنجی
+  // اگر توکن در متغیرهای محیطی ست نشده باشد، سرویس مستقیماً به استتار هدایت می‌شود
+  if (!secretToken) {
+    return handleDecoyTraffic(request, url);
+  }
+
+  // مرحله ۱: راستی‌آزمایی توکن لایه امنیتی
   const isAuthenticated = verifyAuthentication(request, url, secretToken);
 
-  // مرحله ۲: هدایت پروب‌ها و درخواست‌های ناشناس به استتار
+  // مرحله ۲: هدایت ترافیک نامعتبر یا پروب‌ها به پورتال استتار
   if (!isAuthenticated) {
     return handleDecoyTraffic(request, url);
   }
 
-  // مرحله ۳: عبور ترافیک معتبر و پروکسی به پنل X-UI
+  // مرحله ۳: پردازش و ارسال درخواست تاییدشده به سمت نود پنل
   return await handleProxyRequest(request, url, info);
 });
