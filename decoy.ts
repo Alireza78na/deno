@@ -1,25 +1,24 @@
 /**
- * Decoy & Camouflage Engine for Deno Deploy
- * Handles unauthenticated requests, health checks, and anti-probe landing pages.
+ * Decoy & Active-Probing Mitigation Engine for Deno Deploy
  */
 
 export function handleDecoyTraffic(request: Request, url: URL): Response {
   const path = url.pathname.toLowerCase();
 
-  // هندلینگ پیش‌پرواز CORS و متدهای بازرسی
+  // هندلینگ استاندارد درخواست‌های OPTIONS
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
       headers: {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key, X-Sub-Auth, X-Target-Node, X-Slice-Offset, X-Slice-Length",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key, Range",
         "Access-Control-Max-Age": "86400",
       },
     });
   }
 
-  // فایل robots.txt جهت گمراه‌سازی خزشگرها
+  // فایل استاندارد robots.txt[cite: 3]
   if (path === "/robots.txt") {
     return new Response(
       `User-agent: *\nAllow: /\nDisallow: /api/private/\nSitemap: ${url.origin}/sitemap.xml\n`,
@@ -33,9 +32,9 @@ export function handleDecoyTraffic(request: Request, url: URL): Response {
     );
   }
 
-  // هندلینگ آیکون فاویکون SVG
+  // آیکون استاندارد favicon.ico[cite: 3]
   if (path === "/favicon.ico") {
-    const svgIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#2563eb"/><path d="M10 17l4 4 8-8" stroke="#ffffff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    const svgIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#0284c7"/><path d="M10 17l4 4 8-8" stroke="#ffffff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     return new Response(svgIcon, {
       status: 200,
       headers: {
@@ -45,13 +44,13 @@ export function handleDecoyTraffic(request: Request, url: URL): Response {
     });
   }
 
-  // اندپوینت‌های مانیتورینگ سلامت سرویس
+  // اندپوینت‌های مانیتورینگ عمومی بدون افشای ساختار پروکسی[cite: 3]
   if (path === "/health" || path === "/healthz" || path === "/ping") {
     return new Response(
       JSON.stringify({
         status: "operational",
-        service: "ApexEdge-Telemetry-Ingress",
-        version: "4.3.0-lts",
+        service: "Edge-Mesh-Ingress",
+        version: "4.3.1-lts",
         region: Deno.env.get("DENO_REGION") || "global-anycast",
         timestamp: Math.floor(Date.now() / 1000),
       }),
@@ -70,9 +69,9 @@ export function handleDecoyTraffic(request: Request, url: URL): Response {
       JSON.stringify({
         cluster: "mesh-eu-central",
         nodes_active: 7,
-        latency_p99: "4.2ms",
-        uptime_30d: "99.992%",
-        engine: "EdgeCore Deno V8",
+        latency_p99: "3.8ms",
+        uptime_30d: "99.995%",
+        engine: "EdgeCore V8",
       }),
       {
         status: 200,
@@ -84,7 +83,7 @@ export function handleDecoyTraffic(request: Request, url: URL): Response {
     );
   }
 
-  // صفحه اصلی پورتال شرکتی
+  // صفحه اصلی پورتال شرکتی معتبر
   if (path === "/" || path === "/index.html" || path === "/overview" || path === "/docs") {
     return new Response(renderEnterpriseLandingPage(url.host), {
       status: 200,
@@ -97,8 +96,8 @@ export function handleDecoyTraffic(request: Request, url: URL): Response {
     });
   }
 
-  // صفحه خطای ۴۰۴ ساختاریافته برای مسیرهای ثبت‌نشده
-  return new Response(renderBrandedNotFoundPage(url.pathname), {
+  // پاسخ ۴۰۴ وب‌سرور استاندارد جهت مقابله با اسکنرهای مسیر
+  return new Response(renderStandardNotFoundPage(url.pathname), {
     status: 404,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
@@ -114,8 +113,8 @@ function renderEnterpriseLandingPage(host: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ApexEdge | High-Performance Cloud Mesh & Ingestion Gateway</title>
-  <meta name="description" content="Global real-time data ingestion, telemetry routing mesh, and edge acceleration network.">
+  <title>ApexEdge | High-Performance Cloud Ingestion Gateway</title>
+  <meta name="description" content="Distributed real-time telemetry routing mesh, edge acceleration and API gateway.">
   <style>
     :root {
       --bg: #090d16;
@@ -123,96 +122,87 @@ function renderEnterpriseLandingPage(host: string): string {
       --border: #1f293d;
       --text: #f3f4f6;
       --text-muted: #9ca3af;
-      --primary: #3b82f6;
       --accent: #10b981;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; font-family: var(--font); }
     body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
     header { border-bottom: 1px solid var(--border); padding: 18px 32px; display: flex; justify-content: space-between; align-items: center; }
-    .brand { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; color: #fff; }
-    .brand-badge { background: #2563eb22; color: #60a5fa; border: 1px solid #3b82f644; font-size: 11px; padding: 3px 8px; border-radius: 9999px; font-weight: 600; }
+    .brand { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 10px; color: #fff; }
     .status-pill { display: inline-flex; align-items: center; gap: 8px; background: #064e3b33; color: #34d399; border: 1px solid #05966944; padding: 5px 14px; border-radius: 9999px; font-size: 12px; font-weight: 500; }
     .dot { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 10px var(--accent); }
-    main { max-width: 1080px; margin: 0 auto; padding: 60px 24px; flex: 1; }
+    main { max-width: 1040px; margin: 0 auto; padding: 60px 24px; flex: 1; }
     .hero { text-align: center; margin-bottom: 60px; }
-    .hero h1 { font-size: 42px; font-weight: 800; letter-spacing: -1px; margin-bottom: 16px; background: linear-gradient(135deg, #ffffff 30%, #93c5fd 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .hero p { font-size: 17px; color: var(--text-muted); max-width: 640px; margin: 0 auto 30px; line-height: 1.6; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; margin-bottom: 50px; }
-    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 28px; }
-    .card h3 { font-size: 17px; font-weight: 600; margin-bottom: 10px; color: #fff; }
+    .hero h1 { font-size: 38px; font-weight: 800; margin-bottom: 16px; background: linear-gradient(135deg, #ffffff 40%, #93c5fd 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .hero p { font-size: 16px; color: var(--text-muted); max-width: 640px; margin: 0 auto; line-height: 1.6; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; margin-bottom: 40px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 26px; }
+    .card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #fff; }
     .card p { font-size: 14px; color: var(--text-muted); line-height: 1.5; }
-    .code-box { background: #050811; border: 1px solid var(--border); border-radius: 8px; padding: 18px; font-family: monospace; font-size: 13px; color: #93c5fd; overflow-x: auto; margin-top: 15px; }
-    footer { border-top: 1px solid var(--border); padding: 24px 32px; font-size: 13px; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center; }
+    .code-box { background: #050811; border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: monospace; font-size: 13px; color: #93c5fd; overflow-x: auto; margin-top: 12px; }
+    footer { border-top: 1px solid var(--border); padding: 20px 32px; font-size: 13px; color: var(--text-muted); display: flex; justify-content: space-between; }
   </style>
 </head>
 <body>
   <header>
     <div class="brand">
       <span>ApexEdge Mesh</span>
-      <span class="brand-badge">Enterprise v4.3</span>
     </div>
     <div class="status-pill">
       <span class="dot"></span>
-      <span>All Systems Operational (99.99%)</span>
+      <span>Cluster Operational (99.99%)</span>
     </div>
   </header>
   <main>
     <div class="hero">
-      <h1>Global Ingestion & Edge Telemetry Gateway</h1>
-      <p>Distributed zero-trust proxy layer providing sub-millisecond edge routing, TLS 1.3 mutual handshake acceleration, and automated endpoint resilience.</p>
+      <h1>Global Telemetry & Edge Ingress Layer</h1>
+      <p>High-concurrency anycast endpoint network providing zero-latency ingress routing, automated failover, and cryptographic request verification.</p>
     </div>
     <div class="grid">
       <div class="card">
-        <h3>Sub-Millisecond Routing</h3>
-        <p>Low-latency telemetry nodes terminating connections at optimal geo-distributed Anycast clusters globally.</p>
+        <h3>Anycast Edge Termination</h3>
+        <p>Low-latency telemetry endpoints terminating sessions at geodistributed network edges globally.</p>
       </div>
       <div class="card">
-        <h3>Zero-Trust API Ingress</h3>
-        <p>Enforced bearer token authorization with automated replay prevention and granular endpoint rate-limiting.</p>
+        <h3>Cryptographic Ingress</h3>
+        <p>Zero-trust bearer token authentication with automated replay prevention and anti-scan filters.</p>
       </div>
       <div class="card">
-        <h3>High-Throughput Streaming</h3>
-        <p>Engineered for high-concurrency microservice payloads with native HTTP/2 multiplexing and dynamic buffer sizing.</p>
+        <h3>Dynamic Stream Multiplexing</h3>
+        <p>Architected for microservice and event-driven data streaming over persistent HTTP/2 channels.</p>
       </div>
     </div>
     <div class="card">
-      <h3>Active Health & Diagnostics Endpoint</h3>
-      <p>Automated telemetry scanners may verify gateway availability via standard HTTP GET ping:</p>
+      <h3>Active Health & Readiness Verification</h3>
+      <p>System monitors may verify endpoint availability via HTTP GET ping:</p>
       <div class="code-box">curl -s https://${host}/health</div>
     </div>
   </main>
   <footer>
     <div>&copy; 2026 ApexEdge Cloud Infrastructure Ltd. All rights reserved.</div>
-    <div>Runtime: Deno Edge V8 | Latency: 1.1ms</div>
+    <div>Runtime: Edge-V8</div>
   </footer>
 </body>
 </html>`;
 }
 
-function renderBrandedNotFoundPage(requestedPath: string): string {
+function renderStandardNotFoundPage(path: string): string {
   return `<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>404 Not Found - ApexEdge Gateway</title>
+  <title>404 Not Found</title>
   <style>
-    body { background: #0b0f19; color: #f3f4f6; font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .box { text-align: center; max-width: 480px; padding: 32px; background: #111827; border: 1px solid #1f293d; border-radius: 12px; }
-    h1 { font-size: 56px; color: #3b82f6; margin-bottom: 8px; font-weight: 800; }
-    h2 { font-size: 18px; margin-bottom: 12px; color: #fff; }
-    p { font-size: 14px; color: #9ca3af; line-height: 1.6; margin-bottom: 24px; word-break: break-all; }
-    a { display: inline-block; background: #2563eb; color: #fff; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 500; }
-    a:hover { background: #1d4ed8; }
+    body { font-family: Arial, sans-serif; text-align: center; padding: 15% 0; background: #fff; color: #222; }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    hr { max-width: 500px; border: 0; border-top: 1px solid #ccc; margin: 15px auto; }
+    p { font-size: 14px; color: #666; }
   </style>
 </head>
 <body>
-  <div class="box">
-    <h1>404</h1>
-    <h2>API Endpoint Not Registered</h2>
-    <p>The requested route <code>${requestedPath}</code> was not found on this Edge cluster or requires active bearer credentials.</p>
-    <a href="/">Return to Mesh Portal</a>
-  </div>
+  <h1>404 Not Found</h1>
+  <p>The endpoint <code>${path}</code> does not exist on this cluster.</p>
+  <hr>
+  <p>LiteSpeed Web Server</p>
 </body>
 </html>`;
 }
