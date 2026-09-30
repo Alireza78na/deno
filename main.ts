@@ -1,20 +1,20 @@
 /**
  * ==============================================================================
  * ApexEdge Gateway - High-Performance Edge API Mesh (Deno Deploy)
- * Hardened Edge Routing, Zero-Hardcoded Secrets & Zero-Information Decoy
+ * Zero-Hardcoded Secrets, Active Probing Mitigation & Dynamic Byte Padding
  * ==============================================================================
  */
 
 import { handleDecoyTraffic } from "./decoy.ts";
 
-// دریافت لیست نودهای مجاز از متغیرهای محیطی یا مقدار پیش‌فرض نودها
+// استخراج لیست نودهای مجاز از متغیرهای محیطی
 const rawAllowedNodes = Deno.env.get("ALLOWED_NODES") || "s1,s2,s3,s4,s5,s6,s7";
 const ALLOWED_NODES = new Set(
   rawAllowedNodes.split(",").map((node) => node.trim().toLowerCase())
 );
 
 /**
- * اعتبارسنجی توکن لایه امنیتی ورودی
+ * اعتبارسنجی احراز هویت درخواست ورودی با کلیدهای امنیتی
  */
 function verifyAuthentication(request: Request, url: URL, secretToken: string): boolean {
   const authHeader = request.headers.get("Authorization");
@@ -33,14 +33,92 @@ function verifyAuthentication(request: Request, url: URL, secretToken: string): 
 }
 
 /**
- * مدیریت پروکسی درخواست به سمت نود بالادستی
+ * تزریق نویز تصادفی به محتوای سابسکریپشن جهت تغییر پیوسته اندازه بسته و خنثی‌سازی آنالیز آماری DPI
+ */
+function injectSubscriptionPadding(bodyBytes: ArrayBuffer): ArrayBuffer {
+  // تولید طول متغیر برای نویز بین ۲۵۶ تا ۱۲۸۰ بایت در هر درخواست
+  const paddingLength = Math.floor(Math.random() * 1024) + 256;
+  const randomHex = Array.from(
+    crypto.getRandomValues(new Uint8Array(Math.ceil(paddingLength / 2)))
+  )
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, paddingLength);
+
+  const text = new TextDecoder().decode(bodyBytes).trim();
+
+  // ۱. فرمت JSON (کانفیگ‌های Sing-box) - افزودن فضای خالی انتهایی طبق استاندارد RFC 8259
+  if (text.startsWith("{") || text.startsWith("[")) {
+    const paddedText = text + " ".repeat(paddingLength);
+    return new TextEncoder().encode(paddedText).buffer;
+  }
+
+  // ۲. فرمت YAML (کانفیگ‌های Clash و Mihomo) - افزودن خط کامنت
+  if (text.includes("proxies:") || text.includes("mixed-port:") || text.includes("rules:")) {
+    const paddedText = text + `\n# padding: ${randomHex}\n`;
+    return new TextEncoder().encode(paddedText).buffer;
+  }
+
+  // ۳. فرمت Base64 (کانفیگ‌های استاندارد V2Ray و Xray)
+  try {
+    const binString = atob(text.replace(/\s+/g, ""));
+    const decodedBytes = Uint8Array.from(binString, (c) => c.charCodeAt(0));
+    const decodedText = new TextDecoder().decode(decodedBytes);
+
+    if (decodedText.includes("://")) {
+      const paddedDecoded = decodedText.trimEnd() + `\n# padding: ${randomHex}\n`;
+      const encodedBytes = new TextEncoder().encode(paddedDecoded);
+
+      let encodedBinString = "";
+      const chunkSize = 8192;
+      for (let i = 0; i < encodedBytes.length; i += chunkSize) {
+        encodedBinString += String.fromCharCode(
+          ...encodedBytes.subarray(i, i + chunkSize)
+        );
+      }
+      const reencodedBase64 = btoa(encodedBinString);
+
+      return new TextEncoder().encode(reencodedBase64).buffer;
+    }
+  } catch (_e) {
+    // در صورت وجود کاراکترهای خارج از محدوده دکود، داده اصلی بدون تغییر بازگردانده می‌شود
+  }
+
+  return bodyBytes;
+}
+
+/**
+ * شبیه‌سازی صفحه خطای استاندارد وب‌سرور برای جلوگیری از افشای هویت سرور
+ */
+function renderWebserverErrorPage(code: number, text: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <title>${code} ${text}</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 15% 0; background: #fff; color: #222; }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    hr { max-width: 500px; border: 0; border-top: 1px solid #ccc; margin: 15px auto; }
+    p { font-size: 14px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>${code} ${text}</h1>
+  <p>The requested service is unreachable or returned an invalid response.</p>
+  <hr>
+  <p>LiteSpeed Web Server</p>
+</body>
+</html>`;
+}
+
+/**
+ * پردازش و هدایت پروکسی به نودهای بالادست
  */
 async function handleProxyRequest(
   request: Request,
   url: URL,
   info: Deno.ServeHandlerInfo
 ): Promise<Response> {
-  // دریافت دامنه سرورهای بالادستی از متغیر محیطی
   const targetDomain = Deno.env.get("TARGET_DOMAIN");
   if (!targetDomain) {
     return new Response(renderWebserverErrorPage(502, "Bad Gateway"), {
@@ -49,7 +127,7 @@ async function handleProxyRequest(
     });
   }
 
-  // ۱. شناسایی نود مقصد از روی هدر یا پارامترهای ارسالی[cite: 3]
+  // ۱. شناسایی شناسه نود
   let targetNode = request.headers.get("X-Target-Node")?.toLowerCase()?.trim();
 
   if (!targetNode) {
@@ -74,11 +152,11 @@ async function handleProxyRequest(
     });
   }
 
-  // ۲. آدرس‌دهی مستقیم به سرور نود[cite: 3]
+  // ۲. ساخت آدرس آپ‌استریم نود
   const upstreamHostname = `${targetNode}.${targetDomain.trim()}`;
   const upstreamUrl = new URL(url.pathname + url.search, `https://${upstreamHostname}:443`);
 
-  // ۳. پاکسازی کامل هدرهای داخلی جهت حذف هرگونه ردپای پروکسی[cite: 3]
+  // ۳. پالایش و استانداردسازی هدرها
   const upstreamHeaders = new Headers(request.headers);
   upstreamHeaders.set("Host", upstreamHostname);
 
@@ -89,7 +167,6 @@ async function handleProxyRequest(
   upstreamHeaders.delete("X-Slice-Offset");
   upstreamHeaders.delete("X-Slice-Length");
 
-  // فوروارد امن آی‌پی کلاینت[cite: 3]
   const clientIP =
     request.headers.get("CF-Connecting-IP") ||
     request.headers.get("X-Real-IP") ||
@@ -110,9 +187,14 @@ async function handleProxyRequest(
       redirect: "manual",
     });
 
-    const fullBody = await upstreamResponse.arrayBuffer();
+    let fullBody = await upstreamResponse.arrayBuffer();
 
-    // پشتیبانی کامل از برش بایتی بسته (Byte Slicing / Range)[cite: 3]
+    // تزریق نویز تصادفی فقط بر روی پاسخ‌های موفق
+    if (upstreamResponse.status === 200) {
+      fullBody = injectSubscriptionPadding(fullBody);
+    }
+
+    // پشتیبانی از برش بایتی و استانداردهای HTTP Range
     const sliceOffsetHeader = request.headers.get("X-Slice-Offset");
     const sliceLengthHeader = request.headers.get("X-Slice-Length");
     const rangeHeader = request.headers.get("Range");
@@ -121,7 +203,6 @@ async function handleProxyRequest(
     let statusCode = upstreamResponse.status;
     const responseHeaders = new Headers(upstreamResponse.headers);
 
-    // حذف هدرهای افشاکننده یا ناسازگار پروتکل[cite: 3]
     responseHeaders.delete("content-encoding");
     responseHeaders.delete("transfer-encoding");
     responseHeaders.delete("content-length");
@@ -150,13 +231,12 @@ async function handleProxyRequest(
       responseHeaders.set("Content-Range", `bytes ${start}-${Math.min(end, totalSize) - 1}/${totalSize}`);
     }
 
-    // هدایت ایمن سرفصل وضعیت مصرف کاربر[cite: 3]
+    // هدایت کنترل‌شده هدر مشخصات مصرف کلاینت
     const subInfo = upstreamResponse.headers.get("Subscription-Userinfo");
     if (subInfo) {
       responseHeaders.set("Subscription-Userinfo", subInfo);
     }
 
-    // هدرهای بهینه‌سازی و عدم ذخیره در کش
     responseHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     responseHeaders.set("Pragma", "no-cache");
 
@@ -166,7 +246,6 @@ async function handleProxyRequest(
       headers: responseHeaders,
     });
   } catch (_err: unknown) {
-    // بازگرداندن صفحه خطای طبیعی وب‌سرور در صورت قطعی بالادست
     return new Response(renderWebserverErrorPage(502, "Bad Gateway"), {
       status: 502,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -174,48 +253,24 @@ async function handleProxyRequest(
   }
 }
 
-/**
- * شبیه‌سازی صفحه خطای وب‌سرور استاندارد جهت مقابله با پروب‌های فعال
- */
-function renderWebserverErrorPage(code: number, text: string): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <title>${code} ${text}</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding: 15% 0; background: #fff; color: #222; }
-    h1 { font-size: 24px; margin-bottom: 8px; }
-    hr { max-width: 500px; border: 0; border-top: 1px solid #ccc; margin: 15px auto; }
-    p { font-size: 14px; color: #666; }
-  </style>
-</head>
-<body>
-  <h1>${code} ${text}</h1>
-  <p>The requested service is unreachable or returned an invalid response.</p>
-  <hr>
-  <p>LiteSpeed Web Server</p>
-</body>
-</html>`;
-}
-
-// ثبت وب‌سرور در بستر دینو دیپلوی
+// ثبت سرور بومی دینو
 Deno.serve(async (request: Request, info: Deno.ServeHandlerInfo): Promise<Response> => {
   const url = new URL(request.url);
   const secretToken = Deno.env.get("SUB_AUTH_TOKEN");
 
-  // اگر توکن در متغیرهای محیطی ست نشده باشد، سرویس مستقیماً به استتار هدایت می‌شود
+  // هدایت پیش‌فرض به استتار در صورت تعریف نشدن متغیر توکن
   if (!secretToken) {
     return handleDecoyTraffic(request, url);
   }
 
-  // مرحله ۱: راستی‌آزمایی توکن لایه امنیتی
+  // ۱. اعتبارسنجی توکن
   const isAuthenticated = verifyAuthentication(request, url, secretToken);
 
-  // مرحله ۲: هدایت ترافیک نامعتبر یا پروب‌ها به پورتال استتار
+  // ۲. هدایت کلیه پروب‌ها و اسکن‌ها به استتار
   if (!isAuthenticated) {
     return handleDecoyTraffic(request, url);
   }
 
-  // مرحله ۳: پردازش و ارسال درخواست تاییدشده به سمت نود پنل
+  // ۳. ارسال درخواست اعتبارسنجی شده به نود
   return await handleProxyRequest(request, url, info);
 });
